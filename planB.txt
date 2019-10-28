@@ -1,0 +1,111 @@
+if (myid == MASTER)
+	{
+		writeInputFile(IN_FNAME);
+
+		readPointsFromFile(&points, IN_FNAME, &N, &K, &T, &dT, &LIMIT, &QM);
+
+		int pointsPerSlave = N / 3,
+			pointsInMaster = N - 2 * pointsPerSlave;
+		
+		MPI_Send(&K, 1, MPI_INT, SLAVE1, 0, MPI_COMM_WORLD);
+		MPI_Send(&K, 1, MPI_INT, SLAVE2, 0, MPI_COMM_WORLD);
+
+		MPI_Send(&pointsPerSlave, 1, MPI_INT, SLAVE1, 0, MPI_COMM_WORLD);
+		MPI_Send(&pointsPerSlave, 1, MPI_INT, SLAVE2, 0, MPI_COMM_WORLD);
+
+		MPI_Send(points + pointsInMaster, pointsPerSlave, PointMPIType, SLAVE1, 0, MPI_COMM_WORLD);
+		MPI_Send(points + pointsInMaster + pointsPerSlave, pointsPerSlave, PointMPIType, SLAVE2, 0, MPI_COMM_WORLD);
+		
+		kMeans(clusters, K, points, N, T, dT, LIMIT, QM, PointMPIType, ClusterMPIType, pointsInMaster, pointsPerSlave, status);
+	}
+	else
+	{
+		char flag = 0, limit = 0, time = 0;
+
+		MPI_Recv(&K, 1, MPI_INT, MASTER, 0, MPI_COMM_WORLD, &status);
+		clusters = (Cluster*)malloc(K * sizeof(Cluster));
+
+		MPI_Recv(&N, 1, MPI_INT, MASTER, 0, MPI_COMM_WORLD, &status);
+		points = (Point*)malloc(N * sizeof(Point));
+
+		MPI_Recv(points, N, PointMPIType, MASTER, 0, MPI_COMM_WORLD, &status);
+		
+		while (time == 0)
+		{
+			while (limit == 0)
+			{
+				MPI_Recv(clusters, K, ClusterMPIType, MASTER, 0, MPI_COMM_WORLD, &status);
+				cudaGroupPoints(clusters, K, points, N, &flag);
+				printf("Slave%d REACHED with flag: %c; and N: %d; \n", myid, flag + 48, N);
+				fflush(stdout);
+				MPI_Send(points, N, PointMPIType, MASTER, (int)flag, MPI_COMM_WORLD);
+				MPI_Recv(&limit, 1, MPI_CHAR, MASTER, 0, MPI_COMM_WORLD, &status);
+			}
+		}
+	}
+
+
+void kMeans(Cluster* clusters, int K, Point* points, int N, int T, double dT, int LIMIT, double QM, MPI_Datatype PointMPIType, MPI_Datatype ClusterMPIType, int pointsInMaster, int pointsPerSlave, MPI_Status status)
+{
+	int i;
+	double t, q;
+	char flag, flag1, flag2;
+	
+
+	for (t = 0; t < T; t += dT)
+	{
+		if (t != 0)//move points only after first iteration
+		{
+			cudaRecalculatePoints(points, N, dT);
+			free(clusters);
+			//recalculatePoints(clusters, points, N, dT);
+		}
+
+		initClusters(&clusters, K, points);
+
+		for (i = 0; i < LIMIT; i++)
+		{
+			flag = 0;
+			MPI_Send(clusters, K, ClusterMPIType, SLAVE1, 0, MPI_COMM_WORLD);
+			MPI_Send(clusters, K, ClusterMPIType, SLAVE2, 0, MPI_COMM_WORLD);
+
+			//groupPoints(clusters, K, points, N, &flag);
+			cudaGroupPoints(clusters, K, points, pointsInMaster, &flag);
+			printf("*** REACHED *** with %d pointsPerSlave \n", pointsPerSlave);
+			fflush(stdout);
+			MPI_Recv(points + pointsInMaster, pointsPerSlave, PointMPIType, SLAVE1, 0, MPI_COMM_WORLD, &status);
+			flag1 = (char)status.MPI_TAG;
+			printf("*** REACHED 1***\n");
+			fflush(stdout);
+			MPI_Recv(points + pointsInMaster + pointsPerSlave, pointsPerSlave, PointMPIType, SLAVE2, 0, MPI_COMM_WORLD, &status);
+			flag2 = (char)status.MPI_TAG;
+			printf("*** REACHED 2***\n");
+			fflush(stdout);
+			flag += flag1 + flag2;
+
+			updateClusters(clusters, K, points, N);
+			recalculateClusters(clusters, K);
+
+			MPI_Send(&flag, 1, MPI_CHAR, SLAVE1, 0, MPI_COMM_WORLD);
+			MPI_Send(&flag, 1, MPI_CHAR, SLAVE2, 0, MPI_COMM_WORLD);
+
+			if (flag == 0) //check if any points switched clusters during the iteration
+				i = LIMIT;
+		}
+		
+		cudaCalcDiameters(clusters, K, points, N);
+		//calcDiameters(clusters, K, points, N);
+		q = evaluateQuality(clusters, K);
+		
+		printf("*** t = %.2lf ***\n", t);
+		printClusters(clusters, K);
+
+		if (q <= QM)
+		{
+			writeOutputFile(OUT_FNAME, clusters, K, t, q);
+			printf("\n*** Quality Measure Reached ***\n");
+			t = T;
+		}
+	}
+	
+}

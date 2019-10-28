@@ -1,0 +1,6 @@
+First occurrence at t = 0.00 with q = 0.74 
+Centers of the clusters : 
+ -0.206354	-0.282264 
+ -0.342962	0.232993 
+ 0.271773	0.102866 
+ 66.690537	133.304410 
